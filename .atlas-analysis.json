@@ -1,0 +1,67 @@
+{
+  "projectType": "api-service",
+  "projectName": "Patrimonio Gateway",
+  "projectDescription": "API Gateway for the Atotonilco de Tula municipal heritage asset management system, handling authentication, routing, and communication between microservices.",
+  "theme": "luma",
+  "primaryColor": "#1a56db",
+  "lightColor": null,
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": ["introduction", "quickstart", "architecture"]
+          },
+          {
+            "group": "Configuration",
+            "pages": ["configuration/environment", "configuration/services", "configuration/cors"]
+          },
+          {
+            "group": "Guides",
+            "pages": ["guides/wake-up", "guides/error-handling", "guides/deployment"]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": ["api/overview", "api/health"]
+          },
+          {
+            "group": "Authentication & Users",
+            "pages": ["api/auth", "api/roles", "api/usuarios"]
+          },
+          {
+            "group": "Asset Management",
+            "pages": ["api/bienes", "api/upload", "api/importador"]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Centralized routing to multiple microservices (auth, bienes, upload, importador)",
+    "Intelligent service wake-up for Render.com cold-start handling",
+    "Transparent authentication header forwarding via Bearer tokens",
+    "Automatic proxy error recovery with retry logic for non-GET requests",
+    "CORS support with credentials for cross-origin frontend access",
+    "Module-based request tagging via x-module header",
+    "Path rewriting to normalize upstream service URLs",
+    "Health check endpoint for gateway availability monitoring"
+  ],
+  "publicApiSurface": [
+    "POST /auth/login",
+    "GET|POST|PUT|DELETE /auth/*",
+    "GET|POST|PUT|DELETE /roles/*",
+    "GET|POST|PUT|DELETE /usuarios/*",
+    "POST /api/upload/*",
+    "GET|POST|PUT|DELETE /bienes/*",
+    "POST /importador/*",
+    "GET /health"
+  ]
+}

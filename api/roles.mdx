@@ -1,0 +1,136 @@
+---
+title: 'Roles API: Manage System Roles Through the Gateway'
+description: 'Manage system roles through the Gateway proxy. All /roles/* requests are forwarded to the auth microservice with the x-module: roles header set automatically.'
+---
+
+The Gateway proxies all `/roles/*` requests to the same auth microservice that handles authentication (`https://patrimonio-apiservice-auth.onrender.com`). Role management is a module within that service — the Gateway distinguishes it by injecting the `x-module: roles` header automatically before forwarding. You do not need to set this header yourself.
+
+All HTTP methods are supported: `GET`, `POST`, `PUT`, `PATCH`, and `DELETE`.
+
+<Note>
+  These routes are served by the auth microservice (`patrimonio-apiservice-auth.onrender.com`), not a separate roles service. The Gateway uses the `x-module` header to allow the upstream service to route the request to the correct internal module.
+</Note>
+
+---
+
+## /roles/* proxy
+
+### Path rewriting
+
+The `/roles` prefix is stripped before the request reaches the upstream service.
+
+| Gateway path        | Upstream path  |
+| ------------------- | -------------- |
+| `/roles`            | `/`            |
+| `/roles/1`          | `/1`           |
+| `/roles/admin`      | `/admin`       |
+
+### Headers
+
+| Header            | Set by      | Value              |
+| ----------------- | ----------- | ------------------ |
+| `x-module`        | Gateway     | `roles`            |
+| `Authorization`   | Client      | `Bearer <token>`   |
+
+<Note>
+  The `x-module: roles` header is added automatically by the Gateway for every request under `/roles/*`. You do not need to include it in your client requests.
+</Note>
+
+### Authentication
+
+All role management operations require a valid JWT token obtained from `POST /auth/login`. Include it as `Authorization: Bearer <token>` in every request.
+
+---
+
+## Examples
+
+### List all roles
+
+<CodeGroup>
+
+```bash curl
+curl --request GET \
+  --url https://<gateway-host>/roles \
+  --header 'Authorization: Bearer <token>'
+```
+
+```javascript JavaScript
+const roles = await fetch('https://<gateway-host>/roles', {
+  headers: { Authorization: `Bearer ${token}` },
+}).then(r => r.json());
+```
+
+</CodeGroup>
+
+### Get a specific role
+
+<CodeGroup>
+
+```bash curl
+curl --request GET \
+  --url https://<gateway-host>/roles/1 \
+  --header 'Authorization: Bearer <token>'
+```
+
+```javascript JavaScript
+const role = await fetch('https://<gateway-host>/roles/1', {
+  headers: { Authorization: `Bearer ${token}` },
+}).then(r => r.json());
+```
+
+</CodeGroup>
+
+### Create a role
+
+<CodeGroup>
+
+```bash curl
+curl --request POST \
+  --url https://<gateway-host>/roles \
+  --header 'Authorization: Bearer <token>' \
+  --header 'Content-Type: application/json' \
+  --data '{ "nombre": "Capturista" }'
+```
+
+```javascript JavaScript
+const newRole = await fetch('https://<gateway-host>/roles', {
+  method: 'POST',
+  headers: {
+    Authorization: `Bearer ${token}`,
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({ nombre: 'Capturista' }),
+}).then(r => r.json());
+```
+
+</CodeGroup>
+
+### Delete a role
+
+<CodeGroup>
+
+```bash curl
+curl --request DELETE \
+  --url https://<gateway-host>/roles/1 \
+  --header 'Authorization: Bearer <token>'
+```
+
+```javascript JavaScript
+await fetch('https://<gateway-host>/roles/1', {
+  method: 'DELETE',
+  headers: { Authorization: `Bearer ${token}` },
+});
+```
+
+</CodeGroup>
+
+---
+
+## Error handling
+
+If the auth service is unavailable, the Gateway attempts a wake-up sequence and retries non-`GET` requests automatically. `GET` requests return a `502` immediately to avoid rate-limiting the upstream service.
+
+| Status | Body                                             | Cause                                   |
+| ------ | ------------------------------------------------ | --------------------------------------- |
+| `401`  | Upstream response                                | Missing or invalid Bearer token         |
+| `502`  | `{ "error": "Servicio temporalmente no disponible" }` | Auth service unreachable after retry |

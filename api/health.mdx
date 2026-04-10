@@ -1,0 +1,75 @@
+---
+title: "GET /health — Patrimonio Gateway Health Check Route"
+description: "Reference for the GET /health endpoint: response shape, usage in uptime monitoring, load balancer probes, and deployment verification workflows."
+---
+
+The `/health` endpoint is a lightweight liveness probe built directly into the Patrimonio Gateway. It requires no authentication, performs no upstream calls, and always responds immediately with an HTTP 200 and a fixed JSON payload. Use it to confirm that the gateway process itself is running — in CI pipelines after a deployment, in uptime-monitoring dashboards, or as the target URL for a load-balancer health check.
+
+## Endpoint
+
+<ParamField path="/health" type="string">
+  The health check path. No path parameters, query parameters, or request body are accepted.
+</ParamField>
+
+| Property | Value |
+|----------|-------|
+| **Method** | `GET` |
+| **Path** | `/health` |
+| **Authentication** | None |
+| **Request body** | None |
+
+## Response
+
+A successful response is always `200 OK`.
+
+### Response body
+
+<ResponseField name="ok" type="boolean" required>
+  Always `true`. Indicates that the gateway Express process is accepting requests.
+</ResponseField>
+
+```json
+{
+  "ok": true
+}
+```
+
+## Examples
+
+<CodeGroup>
+
+```bash cURL
+curl https://your-gateway.onrender.com/health
+```
+
+```javascript JavaScript
+const res = await fetch('https://your-gateway.onrender.com/health');
+const { ok } = await res.json();
+
+if (!ok) {
+  throw new Error('Gateway is not healthy');
+}
+```
+
+</CodeGroup>
+
+## Use Cases
+
+<CardGroup cols={2}>
+  <Card title="Uptime monitoring" icon="chart-line">
+    Configure your monitoring tool (e.g. UptimeRobot, Better Uptime) to poll `/health` on a regular interval. A non-200 response or a timeout triggers an alert.
+  </Card>
+  <Card title="Load balancer probe" icon="server">
+    Point your load balancer's health check at `/health`. Only instances returning `200` will receive traffic, automatically removing unhealthy pods from rotation.
+  </Card>
+  <Card title="Deployment verification" icon="circle-check">
+    After a new deploy, poll `/health` in your CI pipeline until it returns `200` before running smoke tests or switching traffic to the new revision.
+  </Card>
+  <Card title="Wake-up ping" icon="bell">
+    Because the gateway is hosted on Render's free tier, sending a request to `/health` is a low-cost way to wake the gateway process before making authenticated API calls.
+  </Card>
+</CardGroup>
+
+<Note>
+  This endpoint checks **only the gateway process**. A `200` response means the gateway is running — it does not verify that the upstream microservices (auth, bienes, upload, importador) are reachable or healthy. To monitor individual services, implement health checks on each microservice separately.
+</Note>

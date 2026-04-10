@@ -1,0 +1,144 @@
+---
+title: "Architecture: How the Gateway routes and recovers requests"
+description: "Explore Patrimonio Gateway's request flow, path routing table, path rewriting rules, wake-up mechanism, and proxy error recovery in detail."
+---
+
+Patrimonio Gateway sits between all clients and four backend microservices. Every inbound HTTP request passes through CORS middleware and a request logger, then hits a route handler that wakes the target service if needed and proxies the request with the correct path rewrite. This page explains each layer of that flow in detail.
+
+## Request flow
+
+```
+Client
+  │
+  ▼
+CORS middleware  (origin: true, credentials: true)
+  │
+  ▼
+Request logger   ([GATEWAY] METHOD /path)
+  │
+  ▼
+Route handler    (matches path prefix)
+  │
+  ▼
+Wake-up check    (pings /health on target service)
+  │
+  ▼
+Safe proxy       (http-proxy-middleware, 20 s timeout)
+  │
+  ▼
+Upstream microservice
+  │
+  ▼
+Client receives response
+```
+
+<Note>
+  `POST /auth/login` is handled manually with Node.js `fetch` rather than through the proxy middleware. This gives the Gateway full control over the wake-up sequence before attempting the login request.
+</Note>
+
+## Path routing table
+
+Each path prefix maps to one upstream microservice. Incoming paths are rewritten before being sent upstream — see the [Path rewriting](#path-rewriting) section for the exact rules.
+
+| Gateway prefix | Upstream service | Base URL |
+|---|---|---|
+| `/auth/*` | Auth service | `patrimonio-apiservice-auth.onrender.com` |
+| `/roles/*` | Auth service | `patrimonio-apiservice-auth.onrender.com` |
+| `/usuarios/*` | Auth service | `patrimonio-apiservice-auth.onrender.com` |
+| `/api/upload/*` | Upload service | `patrimonio-loadimages.onrender.com` |
+| `/bienes/*` | Bienes service | `bienes-service-nldc.onrender.com` |
+| `/importador/*` | Importador service | `patrimonio-importexeldb.onrender.com` |
+| `/health` | Gateway itself | — |
+
+<Info>
+  `/roles` and `/usuarios` both route to the **auth service**. The Gateway distinguishes them at the service layer using the `x-module` header — see [Module header tagging](#module-header-tagging) below.
+</Info>
+
+## Path rewriting
+
+The Gateway strips or transforms the incoming path prefix before forwarding to the upstream service. The rewrite rules extracted directly from the source are:
+
+| Incoming path | Rewrite rule | Example: request → upstream path |
+|---|---|---|
+| `/auth/…` | `^/auth` → `/` | `/auth/profile` → `/profile` |
+| `/roles/…` | `^/roles` → `/` | `/roles/list` → `/list` |
+| `/usuarios/…` | `^/usuarios` → `/` | `/usuarios/create` → `/create` |
+| `/api/upload/…` | path → `/api/upload` + path | `/api/upload/foto` → `/api/upload/foto` |
+| `/bienes/…` | path → `/api` + path | `/bienes/123` → `/api/bienes/123` |
+| `/importador/…` | target is `…/importar`, `^/importador` → `` | `/importador` → `/importar` |
+
+<Info>
+  Express strips the `/api/upload` prefix before passing the path to the proxy function. The function then prepends `/api/upload` to the remaining path segment, so the upstream receives the same `/api/upload/…` path the client sent. This preserves the upload service's own routing structure.
+</Info>
+
+## Intelligent wake-up mechanism
+
+All backend microservices run on Render.com's free tier, which spins down idle services. The Gateway proactively wakes a service before every proxied request using the following sequence:
+
+<Steps>
+
+<Step title="Initial health ping">
+  The Gateway sends a `GET /health` request to the target service's base URL.
+</Step>
+
+<Step title="Handle a sleeping service">
+  If the ping throws a network error (the service is down), the Gateway:
+  1. Sends a second `GET /health` immediately (first wake attempt).
+  2. Waits **4 seconds** to give Render time to start the container.
+  3. Sends a third `GET /health` (second wake attempt).
+</Step>
+
+<Step title="Proceed with the proxy">
+  After the wake sequence completes — regardless of whether the final ping succeeded — control is passed to the proxy middleware. The 20-second proxy timeout provides additional headroom for the service to finish booting.
+</Step>
+
+</Steps>
+
+<Tip>
+  The `/auth/login` route runs the same wake sequence before issuing its manual `fetch` to the auth service, so login requests are also protected against cold-start failures.
+</Tip>
+
+## Module header tagging
+
+The `/roles` and `/usuarios` routes both proxy to the auth service. To allow the auth service to distinguish which module is making the request, the Gateway injects an `x-module` header before the request reaches the proxy:
+
+| Gateway prefix | `x-module` value set |
+|---|---|
+| `/roles/*` | `roles` |
+| `/usuarios/*` | `usuarios` |
+| `/api/upload/*` | `roles` |
+| `/importador/*` | `importador` |
+
+The header is set in two places for `/usuarios`: in the middleware that runs before the proxy **and** again inside `onProxyReq`, ensuring the header is present both on the Node.js request object and on the outgoing proxied request.
+
+## Proxy error recovery
+
+The `createSafeProxy` wrapper adds an `onError` handler to every proxy that is not the raw `createProxyMiddleware` call on `/bienes`. When the proxy connection fails:
+
+<Steps>
+
+<Step title="Check if headers are already sent">
+  If `res.headersSent` is `true`, the Gateway exits silently — it cannot write a new response.
+</Step>
+
+<Step title="Return 502 for GET requests">
+  If the failed request was a `GET`, the Gateway immediately returns `502 Service Temporarily Unavailable`. GET requests are not retried to avoid triggering upstream rate limits.
+</Step>
+
+<Step title="Wake the service and retry (non-GET only)">
+  For `POST`, `PUT`, `PATCH`, `DELETE`, and other mutating methods:
+  1. The Gateway calls `wakeServiceIfNeeded` on the target service.
+  2. It rewrites the path using the same rules as the normal proxy (stripping `/auth`, `/roles`, `/usuarios`, `/importador` prefixes).
+  3. It retries the original request using Node.js `fetch`, forwarding the `Content-Type`, `Authorization`, and reconstructed body.
+  4. The response from the retry is sent directly to the client.
+</Step>
+
+<Step title="Fatal fallback">
+  If the retry itself throws, the Gateway returns `502 Service Temporarily Unavailable` as a final fallback, provided headers have not been sent yet.
+</Step>
+
+</Steps>
+
+<Note>
+  The `/bienes` route uses a bare `createProxyMiddleware` call without the `createSafeProxy` wrapper, so it does **not** benefit from the automatic retry recovery. Bienes proxy errors fall through to `http-proxy-middleware`'s default error handling.
+</Note>

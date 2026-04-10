@@ -1,0 +1,192 @@
+---
+title: 'Bienes API: Heritage Asset CRUD Routes via Gateway'
+description: 'Proxy routes for CRUD operations on municipal heritage assets (bienes). Forwards requests to the bienes microservice with Bearer token authentication.'
+---
+
+Bienes (heritage assets) are the physical and intangible goods registered under the municipal patrimony of Atotonilco de Tula. The Gateway exposes the `/bienes/*` routes as a transparent proxy to the `bienes-service` microservice, allowing clients to create, read, update, and delete asset records without connecting to the upstream service directly.
+
+<Warning>
+  This route uses `createProxyMiddleware` directly — **not** the safe proxy wrapper. If the upstream bienes service returns a connection error or times out, the Gateway does **not** retry the request. You will receive a `502` response immediately with no recovery attempt.
+</Warning>
+
+<Tip>
+  The bienes service runs on Render's free tier and may be sleeping. Send a request to `/health` on the Gateway first to trigger the wake-up ping, then wait a few seconds before making asset requests.
+</Tip>
+
+## How routing works
+
+All requests to `/bienes/*` are forwarded to `https://bienes-service-nldc.onrender.com`. Express strips the `/bienes` prefix before passing the request to the proxy, then the Gateway prepends `/api` to the remaining path.
+
+| Gateway path | Upstream path |
+|---|---|
+| `GET /bienes` | `GET /api/` |
+| `GET /bienes/123` | `GET /api/123` |
+| `POST /bienes` | `POST /api/` |
+| `PUT /bienes/123` | `PUT /api/123` |
+| `DELETE /bienes/123` | `DELETE /api/123` |
+
+## Authentication
+
+Every request must include a Bearer token in the `Authorization` header. The Gateway forwards this header to the upstream service unchanged.
+
+```http
+Authorization: Bearer <your-token>
+```
+
+## Request headers set by the Gateway
+
+| Header | Value | Description |
+|---|---|---|
+| `Authorization` | Forwarded from client | Bearer token passed through as-is |
+| `ngrok-skip-browser-warning` | `true` | Suppresses ngrok interstitial pages |
+
+## Proxy settings
+
+| Setting | Value |
+|---|---|
+| Target | `https://bienes-service-nldc.onrender.com` |
+| `changeOrigin` | `true` |
+| `proxyTimeout` | 20 000 ms |
+| `timeout` | 20 000 ms |
+| Error recovery | None — raw `createProxyMiddleware` |
+
+## Endpoints
+
+### List all assets
+
+<CodeGroup>
+
+```bash curl
+curl -X GET https://<gateway-host>/bienes \
+  -H "Authorization: Bearer <your-token>"
+```
+
+```javascript fetch
+const response = await fetch('https://<gateway-host>/bienes', {
+  method: 'GET',
+  headers: {
+    Authorization: 'Bearer <your-token>',
+  },
+});
+
+const assets = await response.json();
+```
+
+</CodeGroup>
+
+### Get a single asset
+
+<CodeGroup>
+
+```bash curl
+curl -X GET https://<gateway-host>/bienes/123 \
+  -H "Authorization: Bearer <your-token>"
+```
+
+```javascript fetch
+const response = await fetch('https://<gateway-host>/bienes/123', {
+  method: 'GET',
+  headers: {
+    Authorization: 'Bearer <your-token>',
+  },
+});
+
+const asset = await response.json();
+```
+
+</CodeGroup>
+
+### Create an asset
+
+<CodeGroup>
+
+```bash curl
+curl -X POST https://<gateway-host>/bienes \
+  -H "Authorization: Bearer <your-token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "nombre": "Escritorio de madera",
+    "descripcion": "Escritorio de madera maciza",
+    "valor": 3500.00
+  }'
+```
+
+```javascript fetch
+const response = await fetch('https://<gateway-host>/bienes', {
+  method: 'POST',
+  headers: {
+    Authorization: 'Bearer <your-token>',
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    nombre: 'Escritorio de madera',
+    descripcion: 'Escritorio de madera maciza',
+    valor: 3500.00,
+  }),
+});
+
+const created = await response.json();
+```
+
+</CodeGroup>
+
+### Update an asset
+
+<CodeGroup>
+
+```bash curl
+curl -X PUT https://<gateway-host>/bienes/123 \
+  -H "Authorization: Bearer <your-token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "nombre": "Escritorio de madera (renovado)",
+    "valor": 4000.00
+  }'
+```
+
+```javascript fetch
+const response = await fetch('https://<gateway-host>/bienes/123', {
+  method: 'PUT',
+  headers: {
+    Authorization: 'Bearer <your-token>',
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    nombre: 'Escritorio de madera (renovado)',
+    valor: 4000.00,
+  }),
+});
+
+const updated = await response.json();
+```
+
+</CodeGroup>
+
+### Delete an asset
+
+<CodeGroup>
+
+```bash curl
+curl -X DELETE https://<gateway-host>/bienes/123 \
+  -H "Authorization: Bearer <your-token>"
+```
+
+```javascript fetch
+const response = await fetch('https://<gateway-host>/bienes/123', {
+  method: 'DELETE',
+  headers: {
+    Authorization: 'Bearer <your-token>',
+  },
+});
+
+const result = await response.json();
+```
+
+</CodeGroup>
+
+## Error responses
+
+| Status | Meaning |
+|---|---|
+| `401` / `403` | Invalid or missing Bearer token (returned by the upstream service) |
+| `502` | Upstream service unreachable or timed out — not retried by this route |

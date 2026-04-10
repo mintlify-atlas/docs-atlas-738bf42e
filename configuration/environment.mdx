@@ -1,0 +1,69 @@
+---
+title: "Environment Variables for Patrimonio Gateway Configuration"
+description: "Configure the port the Patrimonio Gateway listens on. Covers the PORT variable, default behavior, and examples for shell and .env-based deployments."
+---
+
+The Patrimonio Gateway reads a small set of environment variables at startup. Currently the only user-controlled variable is `PORT`, which determines which network port the Express server binds to. All other runtime behavior—service URLs, timeouts, CORS policy—is defined in code and documented in the [Services](/configuration/services) and [CORS](/configuration/cors) pages.
+
+## Environment variables
+
+<ParamField path="PORT" type="number" default="3000">
+  The TCP port the gateway process listens on. When omitted the server binds to
+  port **3000**. Any valid, unprivileged port number (1024–65535) is accepted.
+</ParamField>
+
+## Setting PORT in different environments
+
+### Shell (inline)
+
+Set the variable for a single process invocation without persisting it to the environment:
+
+```bash
+PORT=8080 node index.js
+```
+
+### Shell (exported)
+
+Export the variable so that all subsequent commands in the same shell session inherit it:
+
+```bash
+export PORT=8080
+node index.js
+```
+
+### .env file
+
+Most Node.js deployments use a `.env` file together with a package such as
+[dotenv](https://github.com/motdotla/dotenv). Add the following line to your
+`.env`:
+
+```bash
+PORT=8080
+```
+
+Then load it before the server starts by adding `require('dotenv').config()` at the very top of `index.js`, before any other code:
+
+```javascript
+require('dotenv').config(); // must be first
+const express = require('express');
+// ...rest of index.js
+```
+
+### Platform environment (Render, Railway, Heroku, …)
+
+Hosting platforms inject environment variables through their dashboard or CLI.
+Set `PORT` in the service's environment configuration panel. On Render the
+platform also injects its own `PORT` value automatically, so you typically do
+not need to set it manually.
+
+## Example: starting with a custom port
+
+```bash
+PORT=4000 node index.js
+# Gateway corriendo en puerto 4000
+```
+
+<Note>
+  If `PORT` is not set, the gateway defaults to **3000**. Make sure this port
+  is not already in use by another process on the same host.
+</Note>

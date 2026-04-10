@@ -1,0 +1,142 @@
+---
+title: "Deploy Patrimonio Gateway Locally or on Render.com"
+description: "Step-by-step instructions to install, configure, and run Patrimonio Gateway locally or on Render.com, including post-deploy health checks."
+---
+
+Patrimonio Gateway is a plain Node.js process — there is no build step, no bundler, and no Docker image required. It reads a single environment variable (`PORT`) and a hardcoded `SERVICES` map in `index.js`. Deploying it is a matter of cloning the repo, pointing the service URLs at your microservices, and starting the process. This guide covers a local run and a production deployment on Render.com, the platform the project already uses.
+
+## Local deployment
+
+<Steps>
+  <Step title="Clone the repo and install dependencies">
+    ```bash
+    git clone https://github.com/Dari175/Patrimonio-Gateway.git
+    cd Patrimonio-Gateway
+    npm install
+    ```
+
+    The only runtime dependencies are `express`, `http-proxy-middleware`, and `cors`. No build output is generated.
+  </Step>
+  <Step title="Configure the PORT environment variable">
+    The gateway reads `process.env.PORT` and falls back to `3000`:
+
+    ```javascript
+    const PORT = process.env.PORT || 3000;
+    ```
+
+    Set it in your shell if you need a different port:
+
+    ```bash
+    export PORT=8080
+    ```
+
+    Or pass it inline:
+
+    ```bash
+    PORT=8080 node index.js
+    ```
+  </Step>
+  <Step title="Update the SERVICES URLs in index.js">
+    The `SERVICES` object near the top of `index.js` maps each gateway prefix to its upstream base URL:
+
+    ```javascript
+    const SERVICES = {
+      auth:       'https://patrimonio-apiservice-auth.onrender.com',
+      upload:     'https://patrimonio-loadimages.onrender.com',
+      bienes:     'https://bienes-service-nldc.onrender.com',
+      importador: 'https://patrimonio-importexeldb.onrender.com'
+    };
+    ```
+
+    Replace these values with the URLs of your own microservice deployments. Each URL must be a base URL — no trailing slash, no path segment. The gateway appends paths like `/health`, `/login`, and the proxied routes automatically.
+  </Step>
+  <Step title="Start the server">
+    ```bash
+    node index.js
+    ```
+
+    Expected output:
+
+    ```
+    Gateway corriendo en puerto 3000
+    ```
+
+    Confirm the gateway is alive:
+
+    ```bash
+    curl http://localhost:3000/health
+    # → {"ok":true}
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Deploying to Render.com
+
+Render.com is the hosting platform the project is designed for. The gateway and all four upstream microservices run as Render web services.
+
+<Steps>
+  <Step title="Create a new Web Service">
+    In the Render dashboard, click **New → Web Service** and connect your GitHub repository (`Dari175/Patrimonio-Gateway` or your fork).
+  </Step>
+  <Step title="Configure the service settings">
+    Use these settings in the Render UI:
+
+    | Setting | Value |
+    |---|---|
+    | **Environment** | `Node` |
+    | **Build Command** | `npm install` |
+    | **Start Command** | `node index.js` |
+    | **Instance Type** | Free (or paid for always-on) |
+  </Step>
+  <Step title="Set the PORT environment variable">
+    In the **Environment** tab of your Render service, add:
+
+    | Key | Value |
+    |---|---|
+    | `PORT` | `3000` |
+
+    Render also injects its own `PORT` automatically on paid plans, but setting it explicitly ensures consistent behavior.
+
+    <Note>
+      On Render's free tier, the gateway itself will also sleep after inactivity — not just the upstream microservices. If you need the gateway to stay awake, configure an external uptime monitor (e.g. UptimeRobot) to ping `GET /health` every 5 minutes.
+    </Note>
+  </Step>
+  <Step title="Deploy and verify">
+    Click **Deploy**. Once the deploy finishes, open the Render-assigned URL and hit the health endpoint:
+
+    ```bash
+    curl https://your-gateway.onrender.com/health
+    # → {"ok":true}
+    ```
+
+    Then send a request through one of the proxied routes to confirm the wake-up logic is working end-to-end:
+
+    ```bash
+    curl -X POST https://your-gateway.onrender.com/auth/login \
+      -H "Content-Type: application/json" \
+      -d '{"username":"test","password":"test"}'
+    ```
+
+    The first request after a cold start will take several seconds while the auth microservice wakes up.
+
+    <Tip>
+      After deploying, immediately hit every proxied route at least once. This primes the upstream services and minimizes the cold-start delay for your first real user.
+    </Tip>
+  </Step>
+</Steps>
+
+---
+
+## Route-to-service mapping reference
+
+| Gateway prefix | Upstream service | `SERVICES` key |
+|---|---|---|
+| `/auth/*` | `patrimonio-apiservice-auth` | `auth` |
+| `/roles/*` | `patrimonio-apiservice-auth` | `auth` |
+| `/usuarios/*` | `patrimonio-apiservice-auth` | `auth` |
+| `/api/upload/*` | `patrimonio-loadimages` | `upload` |
+| `/bienes/*` | `bienes-service` | `bienes` |
+| `/importador/*` | `patrimonio-importexeldb` | `importador` |
+| `/health` | Gateway itself | — |

@@ -1,0 +1,78 @@
+---
+title: "Waking Sleeping Microservices Before Proxying Requests"
+description: "How Patrimonio Gateway detects and revives dormant Render.com microservices before forwarding requests, preventing cold-start failures for end users."
+---
+
+Render.com's free tier spins down web services after a period of inactivity. When a microservice is asleep, the first incoming request will time out before the service has had a chance to boot. Patrimonio Gateway intercepts this failure before it reaches the client by proactively pinging each upstream service's `/health` endpoint and waiting for it to respond before allowing any proxied request through.
+
+## How `wakeServiceIfNeeded` works
+
+The function lives in `index.js` and is called once per route, on every incoming request, before the proxy middleware runs.
+
+```javascript
+const wakeServiceIfNeeded = async (baseUrl) => {
+  try {
+    await fetch(baseUrl + '/health');
+  } catch (err) {
+    // Service is asleep — begin wake-up sequence
+    await fetch(baseUrl + '/health').catch(() => null);
+    await new Promise(resolve => setTimeout(resolve, 4000));
+    await fetch(baseUrl + '/health').catch(() => null);
+  }
+};
+```
+
+<Steps>
+  <Step title="Initial health ping">
+    The gateway sends a `GET` request to `{baseUrl}/health`. If the service is awake and responds without error, the function returns immediately and the proxy proceeds normally.
+  </Step>
+  <Step title="Detect a sleeping service">
+    If the `fetch` throws (network timeout or connection refused), the catch block executes. This signals that the upstream service is in a cold-start state.
+  </Step>
+  <Step title="First wake-up attempt">
+    A second `GET {baseUrl}/health` is sent immediately. Errors are silenced with `.catch(() => null)` because the service may still be booting — the goal is to trigger the cold start, not to succeed yet.
+  </Step>
+  <Step title="Wait 4 seconds">
+    The gateway pauses for 4,000 ms using `setTimeout`. This gives Render.com time to provision the container and start the process.
+  </Step>
+  <Step title="Second wake-up attempt">
+    A final `GET {baseUrl}/health` is sent. Again, errors are silenced. After this point, the gateway proceeds to proxy the original request regardless — the upstream service should now be responsive.
+  </Step>
+</Steps>
+
+## When wake-up is triggered
+
+Wake-up is called on **every request** to each route, immediately before the proxy middleware:
+
+| Gateway route | Upstream service woken |
+|---|---|
+| `/auth/*` | `patrimonio-apiservice-auth` |
+| `/roles/*` | `patrimonio-apiservice-auth` |
+| `/usuarios/*` | `patrimonio-apiservice-auth` |
+| `/api/upload/*` | `patrimonio-loadimages` |
+| `/bienes/*` | `bienes-service` |
+| `/importador/*` | `patrimonio-importexeldb` |
+
+Each route registers its wake-up as an Express middleware that runs before `createSafeProxy`:
+
+```javascript
+app.use('/roles',
+  async (req, res, next) => {
+    await wakeServiceIfNeeded(SERVICES.auth); // wake first
+    next();                                    // then proxy
+  },
+  createSafeProxy({ target: SERVICES.auth, ... })
+);
+```
+
+## The `/health` endpoint dependency
+
+Every upstream microservice must expose a `GET /health` endpoint that returns any non-error HTTP response. The gateway does not inspect the response body — it only needs the TCP connection to succeed. The gateway itself also exposes `GET /health → { ok: true }` so that Render.com (and other monitors) can keep the gateway process alive.
+
+<Tip>
+  A full wake-up sequence takes **at least 4 seconds** because of the explicit `setTimeout(resolve, 4000)` between the two wake attempts. On Render.com free tier, cold starts can take 10–30 seconds total, so the first real request after a sleep period may appear slow to the end user. Subsequent requests within the same active window will be fast.
+</Tip>
+
+<Note>
+  GET requests do **not** trigger a retry if the proxy itself fails after the wake-up phase — only a single immediate 502 is returned. This is intentional: retrying GET requests risks hitting Render.com's rate limiter (HTTP 429). Non-GET methods (POST, PUT, DELETE) do retry via a direct `fetch` call after a second wake-up cycle. See the [Error Handling guide](/guides/error-handling) for details.
+</Note>

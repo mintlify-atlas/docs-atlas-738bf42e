@@ -1,0 +1,115 @@
+---
+title: "CORS Configuration for the Patrimonio Gateway Service"
+description: "The gateway's CORS policy uses origin reflection with credentials. Learn what this means for browser clients and how to send requests from JavaScript or curl."
+---
+
+The Patrimonio Gateway uses the [`cors`](https://github.com/expressjs/cors) middleware with `origin: true` and `credentials: true`. This tells the server to reflect whatever `Origin` header the browser sends back as the `Access-Control-Allow-Origin` response header, while also allowing cookies and HTTP authentication to be included in cross-origin requests. The result is that any origin can reach the gateway from a browser, provided the client is configured to send credentials explicitly.
+
+## Configuration reference
+
+<ParamField path="origin" type="boolean" default="true">
+  When set to `true`, the server echoes the incoming `Origin` header back as
+  `Access-Control-Allow-Origin`. Every origin is allowed; no whitelist is
+  maintained.
+</ParamField>
+
+<ParamField path="credentials" type="boolean" default="true">
+  Sets `Access-Control-Allow-Credentials: true`, which permits browsers to
+  include cookies, `Authorization` headers, and TLS client certificates in
+  cross-origin requests.
+</ParamField>
+
+## What this means for browser clients
+
+A browser enforces CORS by comparing the page's origin against the
+`Access-Control-Allow-Origin` header returned by the server. Because the
+gateway reflects any origin, the preflight check always passes. However,
+browsers only attach cookies or `Authorization` headers to cross-origin requests
+when **both** conditions hold:
+
+1. The server responds with `Access-Control-Allow-Credentials: true`.
+2. The client explicitly opts in with `credentials: 'include'` (fetch) or
+   `withCredentials: true` (XMLHttpRequest).
+
+Omitting the client-side flag will cause the browser to strip credentials from
+the request, resulting in authentication failures even though the server permits
+the origin.
+
+## Client usage examples
+
+<CodeGroup>
+
+```javascript JavaScript (fetch)
+// Always pass credentials: 'include' so the browser forwards the
+// Authorization header and any session cookies.
+const response = await fetch('https://your-gateway.onrender.com/auth/login', {
+  method: 'POST',
+  credentials: 'include',          // required — do not omit
+  headers: {
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({ username: 'admin', password: 's3cr3t' })
+});
+
+const data = await response.json();
+```
+
+```javascript JavaScript (XMLHttpRequest)
+const xhr = new XMLHttpRequest();
+xhr.open('POST', 'https://your-gateway.onrender.com/auth/login');
+xhr.withCredentials = true;        // required — do not omit
+xhr.setRequestHeader('Content-Type', 'application/json');
+xhr.send(JSON.stringify({ username: 'admin', password: 's3cr3t' }));
+```
+
+```bash curl
+# curl sends credentials only when explicitly asked.
+# Pass -H "Authorization: Bearer <token>" for JWT-protected endpoints.
+curl -X POST https://your-gateway.onrender.com/auth/login \
+  -H "Content-Type: application/json" \
+  -H "Origin: https://your-frontend.com" \
+  -d '{"username":"admin","password":"s3cr3t"}'
+```
+
+</CodeGroup>
+
+## ngrok tunnel header
+
+When developing locally through an ngrok tunnel, ngrok injects an interstitial
+warning page for browser requests. The gateway forwards the
+`ngrok-skip-browser-warning: true` header to upstream services on the `/auth`,
+`/api/upload`, `/bienes`, and `/importador` routes, bypassing that page.
+
+If you are calling the gateway itself through an ngrok URL you must add the
+header on the client side:
+
+```javascript
+const response = await fetch('https://xxxx.ngrok-free.app/auth/login', {
+  method: 'POST',
+  credentials: 'include',
+  headers: {
+    'Content-Type': 'application/json',
+    'ngrok-skip-browser-warning': 'true'
+  },
+  body: JSON.stringify({ username: 'admin', password: 's3cr3t' })
+});
+```
+
+## Security considerations
+
+<Warning>
+  **`origin: true` reflects every origin indiscriminately.** In production this
+  means any website can make credentialed requests to the gateway from a user's
+  browser, including malicious third-party sites. Before going to production,
+  replace `origin: true` with an explicit allowlist:
+
+  ```javascript
+  app.use(cors({
+    origin: ['https://patrimonio.atotonilco.gob.mx', 'https://admin.patrimonio.example.com'],
+    credentials: true
+  }));
+  ```
+
+  This ensures only your own front-end origins can make credentialed
+  cross-origin requests, protecting users from cross-site request forgery.
+</Warning>

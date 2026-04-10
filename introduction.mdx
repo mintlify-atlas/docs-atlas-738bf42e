@@ -1,0 +1,66 @@
+---
+title: "Patrimonio Gateway: One URL for all heritage services"
+description: "Learn what Patrimonio Gateway is, which microservices it connects, and why it is the single entry point for the Atotonilco de Tula asset management system."
+---
+
+Patrimonio Gateway is an Express.js API Gateway that acts as the single entry point for the Atotonilco de Tula municipal heritage asset management system. Instead of calling four separate backend microservices directly, every client — browser apps, mobile clients, and automation scripts — sends all requests to one base URL. The Gateway handles CORS, request logging, authentication header forwarding, intelligent service wake-up, and path-based routing before proxying each request to the correct upstream service.
+
+<Note>
+  The Gateway runs on port `3000` by default. Set the `PORT` environment variable to override this when deploying.
+</Note>
+
+## What it does
+
+<CardGroup cols={2}>
+  <Card title="Single base URL" icon="link">
+    Clients only need one endpoint. Path prefixes (`/auth`, `/bienes`, `/roles`, etc.) determine which microservice handles each request.
+  </Card>
+  <Card title="Intelligent wake-up" icon="bed-pulse">
+    Before forwarding a request, the Gateway pings the target service's `/health` endpoint and waits for it to wake up — preventing cold-start failures on Render.com.
+  </Card>
+  <Card title="CORS with credentials" icon="globe">
+    Configured with `origin: true` and `credentials: true` so browser clients can send cookies and `Authorization` headers cross-origin without manual preflight configuration.
+  </Card>
+  <Card title="Proxy error recovery" icon="arrows-rotate">
+    When a proxy connection fails, the Gateway automatically retries non-GET requests after re-waking the target service. GET failures return a clean `502` immediately to avoid rate-limiting.
+  </Card>
+  <Card title="Auth header forwarding" icon="shield-halved">
+    `Authorization: Bearer` tokens are transparently forwarded to every upstream service so you authenticate once at the Gateway and every microservice receives the token.
+  </Card>
+  <Card title="Module tagging" icon="tag">
+    The `/roles` and `/usuarios` routes inject an `x-module` header before proxying, letting the auth service distinguish which module is making the request.
+  </Card>
+</CardGroup>
+
+## Microservices
+
+The Gateway connects four backend microservices, all hosted on Render.com:
+
+<CardGroup cols={2}>
+  <Card title="Auth service" icon="key" href="/architecture">
+    Handles login, role management, and user management.
+    Host: `patrimonio-apiservice-auth.onrender.com`
+  </Card>
+  <Card title="Bienes service" icon="building-columns" href="/architecture">
+    Manages heritage asset (bien) records.
+    Host: `bienes-service-nldc.onrender.com`
+  </Card>
+  <Card title="Upload service" icon="cloud-arrow-up" href="/architecture">
+    Accepts image uploads for asset records.
+    Host: `patrimonio-loadimages.onrender.com`
+  </Card>
+  <Card title="Importador service" icon="file-import" href="/architecture">
+    Imports asset data from Excel files into the database.
+    Host: `patrimonio-importexeldb.onrender.com`
+  </Card>
+</CardGroup>
+
+## Who uses Patrimonio Gateway
+
+- **Frontend applications** — React or other browser-based apps that manage municipal heritage records and need a CORS-safe API to call.
+- **Municipal administrators** — Staff who upload asset images, import spreadsheets, and manage user roles through web tools backed by the Gateway.
+- **Integration scripts** — Automation or ETL pipelines that call the importador or bienes endpoints to synchronize asset data.
+
+<Tip>
+  If you are building a new client, start with the [Quickstart](/quickstart) to make your first authenticated request in under five minutes.
+</Tip>

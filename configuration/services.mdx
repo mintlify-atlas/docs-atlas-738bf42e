@@ -1,0 +1,118 @@
+---
+title: "Service Routing Configuration — Patrimonio Gateway"
+description: "Details every upstream microservice the gateway proxies, including base URLs, path-rewrite rules, the 20-second proxy timeout, and wake-up behavior."
+---
+
+The gateway routes incoming requests to four backend microservices, each responsible for a distinct domain of the Atotonilco de Tula heritage asset system. Service base URLs and proxy settings are defined in the `SERVICES` configuration object in `index.js`. All proxied connections share a **20-second timeout** and an automatic wake-up mechanism that pings each service's `/health` endpoint before forwarding the first request.
+
+## Service overview
+
+<CardGroup cols={2}>
+  <Card title="auth" icon="lock">
+    Authentication and user management. Handles login, role assignment, and user
+    administration. Shared by the `/auth`, `/roles`, and `/usuarios` path
+    prefixes.
+  </Card>
+  <Card title="upload" icon="image">
+    Image and file upload for heritage assets. Accepts multipart form data and
+    stores asset attachments.
+  </Card>
+  <Card title="bienes" icon="building-columns">
+    Heritage asset CRUD operations. The primary data service for creating,
+    reading, updating, and deleting patrimonio records.
+  </Card>
+  <Card title="importador" icon="file-arrow-up">
+    Excel and bulk import of assets. Accepts spreadsheet uploads and batch-inserts
+    patrimonio records into the database.
+  </Card>
+</CardGroup>
+
+## Routing table
+
+| Service key | Base URL | Gateway path prefix | Path rewrite |
+|-------------|----------|---------------------|--------------|
+| `auth` | `https://patrimonio-apiservice-auth.onrender.com` | `/auth` | `^/auth` → `/` |
+| `auth` | `https://patrimonio-apiservice-auth.onrender.com` | `/roles` | `^/roles` → `/` |
+| `auth` | `https://patrimonio-apiservice-auth.onrender.com` | `/usuarios` | `^/usuarios` → `/` |
+| `upload` | `https://patrimonio-loadimages.onrender.com` | `/api/upload` | path → `/api/upload` + path |
+| `bienes` | `https://bienes-service-nldc.onrender.com` | `/bienes` | path → `/api` + path |
+| `importador` | `https://patrimonio-importexeldb.onrender.com` | `/importador` | `^/importador` → `''` (targets `/importar`) |
+
+### Path rewrite details
+
+**`/auth`, `/roles`, `/usuarios`**  
+The leading path segment is stripped before forwarding. A request to
+`/auth/login` reaches the upstream as `/login`; `/roles/list` becomes `/list`.
+
+```
+Gateway:   POST /auth/login
+Upstream:  POST https://patrimonio-apiservice-auth.onrender.com/login
+```
+
+**`/roles` and `/usuarios` — module header**  
+Requests routed through `/roles` have `x-module: roles` injected; requests
+through `/usuarios` have `x-module: usuarios`. This lets the shared `auth`
+service distinguish which sub-domain is being accessed.
+
+**`/api/upload`**  
+The path prefix is preserved and prepended to the remainder of the path.
+
+```
+Gateway:   POST /api/upload/image
+Upstream:  POST https://patrimonio-loadimages.onrender.com/api/upload/image
+```
+
+**`/bienes`**  
+The `/bienes` prefix is replaced with `/api`.
+
+```
+Gateway:   GET /bienes/123
+Upstream:  GET https://bienes-service-nldc.onrender.com/api/123
+```
+
+**`/importador`**  
+The `/importador` prefix is removed entirely; the effective upstream target is
+`https://patrimonio-importexeldb.onrender.com/importar`.
+
+```
+Gateway:   POST /importador
+Upstream:  POST https://patrimonio-importexeldb.onrender.com/importar
+```
+
+## Proxy timeout
+
+Every proxied connection uses a **20-second timeout** (`proxyTimeout: 20000`,
+`timeout: 20000`). If the upstream does not respond within 20 seconds, the
+gateway returns `502 Servicio temporalmente no disponible`.
+
+For non-GET requests, the gateway also attempts an automatic recovery: it wakes
+the service (see below) and retries the request once before returning the error
+to the client. GET requests are not retried to avoid triggering rate limits.
+
+## Wake-up behavior
+
+All services are hosted on Render's free tier, which spins instances down after
+inactivity. Before forwarding any request the gateway calls `GET {baseUrl}/health`
+to wake the instance.
+
+<Steps>
+  <Step title="Ping /health">
+    The gateway sends a request to `{baseUrl}/health`. If successful the
+    upstream is already awake and the original request is proxied immediately.
+  </Step>
+  <Step title="First retry (if ping fails)">
+    A second `/health` call is made silently.
+  </Step>
+  <Step title="Wait 4 seconds">
+    A 4-second pause gives the Render container time to fully initialize.
+  </Step>
+  <Step title="Second retry">
+    A final `/health` call confirms the service is ready before the original
+    request is forwarded.
+  </Step>
+</Steps>
+
+<Note>
+  The wake-up sequence adds latency to the very first request after a cold
+  start. Subsequent requests within the same active window are unaffected.
+</Note>

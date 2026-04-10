@@ -1,0 +1,178 @@
+---
+title: 'Users API: Manage Municipal Users Through the Gateway'
+description: 'Manage municipal system users through the Gateway. Requests forward to the auth microservice with automatic body re-serialization for write operations.'
+---
+
+The Gateway proxies all `/usuarios/*` requests to the auth microservice (`https://patrimonio-apiservice-auth.onrender.com`), which handles user management as an internal module. The Gateway sets `x-module: usuarios` automatically on every request and forwards the `Authorization` header from the client.
+
+For write operations (`POST`, `PUT`, `PATCH`), the Gateway re-serializes the request body — it reads `req.body`, stringifies it, and explicitly sets `Content-Type: application/json` and `Content-Length` before writing to the proxy request. This ensures the upstream service receives a well-formed payload regardless of how the original request was encoded.
+
+<Note>
+  The `x-module: usuarios` header is injected automatically by the Gateway. You do not need to include it in your client requests.
+</Note>
+
+---
+
+## /usuarios/* proxy
+
+### Path rewriting
+
+The `/usuarios` prefix is stripped before the request reaches the upstream service.
+
+| Gateway path           | Upstream path  |
+| ---------------------- | -------------- |
+| `/usuarios`            | `/`            |
+| `/usuarios/5`          | `/5`           |
+| `/usuarios/perfil`     | `/perfil`      |
+
+### Headers
+
+| Header            | Set by      | Value              |
+| ----------------- | ----------- | ------------------ |
+| `x-module`        | Gateway     | `usuarios`         |
+| `Authorization`   | Client      | `Bearer <token>`   |
+| `Content-Type`    | Gateway     | `application/json` (write requests) |
+| `Content-Length`  | Gateway     | Byte length of serialized body      |
+
+<Warning>
+  Always send request bodies as JSON objects. The Gateway re-serializes `req.body` (parsed by Express's `express.json()` middleware). If your request body is not valid JSON or is sent as `multipart/form-data`, the body will be empty and the upstream service will not receive your payload.
+</Warning>
+
+<Note>
+  The Gateway's body re-serialization explicitly sets `Content-Length` to the byte length of the re-stringified body. This prevents proxy mismatches caused by encoding differences between the original client request and the forwarded proxy request.
+</Note>
+
+### Authentication
+
+All user management operations require a valid JWT token from `POST /auth/login`. Include it as `Authorization: Bearer <token>` on every request.
+
+---
+
+## Examples
+
+### List all users
+
+<CodeGroup>
+
+```bash curl
+curl --request GET \
+  --url https://<gateway-host>/usuarios \
+  --header 'Authorization: Bearer <token>'
+```
+
+```javascript JavaScript
+const users = await fetch('https://<gateway-host>/usuarios', {
+  headers: { Authorization: `Bearer ${token}` },
+}).then(r => r.json());
+```
+
+</CodeGroup>
+
+### Get a user by ID
+
+<CodeGroup>
+
+```bash curl
+curl --request GET \
+  --url https://<gateway-host>/usuarios/5 \
+  --header 'Authorization: Bearer <token>'
+```
+
+```javascript JavaScript
+const user = await fetch('https://<gateway-host>/usuarios/5', {
+  headers: { Authorization: `Bearer ${token}` },
+}).then(r => r.json());
+```
+
+</CodeGroup>
+
+### Create a user
+
+<CodeGroup>
+
+```bash curl
+curl --request POST \
+  --url https://<gateway-host>/usuarios \
+  --header 'Authorization: Bearer <token>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "nombre": "Ana López",
+    "email": "ana.lopez@municipio.gob.mx",
+    "password": "temporal123",
+    "rolId": 2
+  }'
+```
+
+```javascript JavaScript
+const newUser = await fetch('https://<gateway-host>/usuarios', {
+  method: 'POST',
+  headers: {
+    Authorization: `Bearer ${token}`,
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    nombre: 'Ana López',
+    email: 'ana.lopez@municipio.gob.mx',
+    password: 'temporal123',
+    rolId: 2,
+  }),
+}).then(r => r.json());
+```
+
+</CodeGroup>
+
+### Update a user
+
+<CodeGroup>
+
+```bash curl
+curl --request PUT \
+  --url https://<gateway-host>/usuarios/5 \
+  --header 'Authorization: Bearer <token>' \
+  --header 'Content-Type: application/json' \
+  --data '{ "nombre": "Ana López Martínez", "rolId": 3 }'
+```
+
+```javascript JavaScript
+const updated = await fetch('https://<gateway-host>/usuarios/5', {
+  method: 'PUT',
+  headers: {
+    Authorization: `Bearer ${token}`,
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({ nombre: 'Ana López Martínez', rolId: 3 }),
+}).then(r => r.json());
+```
+
+</CodeGroup>
+
+---
+
+## Body re-serialization flow
+
+The Gateway applies the following transformation for every write request before forwarding to the upstream service.
+
+<Steps>
+  <Step title="Parse incoming body">
+    Express parses the incoming request body as a JavaScript object via `express.json()` middleware.
+  </Step>
+  <Step title="Re-serialize to JSON string">
+    The Gateway calls `JSON.stringify(req.body)` to produce a clean UTF-8 JSON string.
+  </Step>
+  <Step title="Set Content-Type and Content-Length">
+    `Content-Type: application/json` and `Content-Length` (byte length of the string) are set on the proxy request headers, overriding whatever the client sent.
+  </Step>
+  <Step title="Write body to proxy request">
+    `proxyReq.write(bodyData)` sends the re-serialized body to the upstream auth service.
+  </Step>
+</Steps>
+
+---
+
+## Error handling
+
+| Status | Body                                             | Cause                                                 |
+| ------ | ------------------------------------------------ | ----------------------------------------------------- |
+| `401`  | Upstream response                                | Missing or invalid Bearer token                       |
+| `400`  | Upstream response                                | Validation error from the auth service                |
+| `502`  | `{ "error": "Servicio temporalmente no disponible" }` | Auth service unreachable after retry             |

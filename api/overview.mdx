@@ -1,0 +1,116 @@
+---
+title: "Patrimonio Gateway API: Proxy Routes and Auth Flow"
+description: "Complete reference for all routes exposed by the Patrimonio Gateway, including authentication, proxied microservices, and request conventions."
+---
+
+The Patrimonio Gateway is a single Express.js entry point that routes requests to four upstream microservices powering the Atotonilco de Tula municipal heritage asset management system. All client traffic — whether for authentication, asset records, file uploads, or bulk imports — passes through this gateway, which handles CORS, Authorization header forwarding, service wake-up on cold starts, and a uniform 20-second proxy timeout.
+
+## Base URL
+
+```
+https://your-gateway.onrender.com
+```
+
+Replace `your-gateway` with your actual Render service subdomain.
+
+## Authentication
+
+All protected routes require a JWT Bearer token. Obtain one by posting credentials to `/auth/login`, then include the token on every subsequent request.
+
+<Steps>
+  <Step title="Request a token">
+    POST your credentials to `/auth/login`. The gateway forwards the request body directly to the auth microservice and returns its response.
+
+    ```bash
+    curl -X POST https://your-gateway.onrender.com/auth/login \
+      -H "Content-Type: application/json" \
+      -d '{"username": "admin", "password": "secret"}'
+    ```
+
+    Response:
+
+    ```json
+    {
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+    }
+    ```
+  </Step>
+  <Step title="Attach the token to requests">
+    Pass the token in the `Authorization` header on every call to a protected endpoint.
+
+    ```
+    Authorization: Bearer <token>
+    ```
+
+    The gateway extracts this header and forwards it to the upstream service automatically — no additional configuration is required on the client side.
+  </Step>
+</Steps>
+
+## Routes
+
+| Method | Path | Service | Description |
+|--------|------|---------|-------------|
+| `POST` | `/auth/login` | auth | Authenticate and get JWT token |
+| `*` | `/auth/*` | auth | Auth service operations (profile, password, etc.) |
+| `*` | `/roles/*` | auth | Role management |
+| `*` | `/usuarios/*` | auth | User management |
+| `*` | `/api/upload/*` | upload | File/image upload for heritage assets |
+| `*` | `/bienes/*` | bienes | Heritage asset CRUD operations |
+| `*` | `/importador/*` | importador | Bulk Excel import of assets |
+| `GET` | `/health` | gateway | Gateway health check |
+
+`*` indicates that all standard HTTP methods (GET, POST, PUT, PATCH, DELETE) are accepted and proxied to the upstream service.
+
+## Common Response Headers
+
+The gateway inherits response headers from each upstream service and appends CORS headers for every request:
+
+| Header | Value | Source |
+|--------|-------|--------|
+| `Access-Control-Allow-Origin` | Reflects request origin | Gateway (CORS middleware) |
+| `Access-Control-Allow-Credentials` | `true` | Gateway (CORS middleware) |
+| `Content-Type` | Set by upstream | Upstream service |
+
+## Complete Authenticated Request Example
+
+The following example shows a full login-then-request flow against the bienes (asset) service:
+
+<CodeGroup>
+
+```bash cURL
+# Step 1 — authenticate
+TOKEN=$(curl -s -X POST https://your-gateway.onrender.com/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "secret"}' \
+  | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
+
+# Step 2 — fetch heritage assets
+curl https://your-gateway.onrender.com/bienes \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```javascript JavaScript
+// Step 1 — authenticate
+const loginRes = await fetch('https://your-gateway.onrender.com/auth/login', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ username: 'admin', password: 'secret' }),
+});
+const { token } = await loginRes.json();
+
+// Step 2 — fetch heritage assets
+const bienesRes = await fetch('https://your-gateway.onrender.com/bienes', {
+  headers: { Authorization: `Bearer ${token}` },
+});
+const assets = await bienesRes.json();
+```
+
+</CodeGroup>
+
+<Note>
+  All proxied requests have a **20-second timeout** (`proxyTimeout: 20000`). If an upstream service does not respond within that window, the gateway returns `502 Bad Gateway` with `{ "error": "Servicio temporalmente no disponible" }`. Design client retry logic accordingly.
+</Note>
+
+<Warning>
+  The upstream microservices are hosted on Render's free tier and may be **sleeping** after a period of inactivity. The gateway includes an automatic wake-up mechanism that pings each service before forwarding your request, but the initial cold-start can add several seconds of latency. If a request times out on the first attempt, retry after a short wait.
+</Warning>

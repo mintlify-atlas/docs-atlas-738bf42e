@@ -1,0 +1,168 @@
+---
+title: "Gateway Error Handling: 502s, Retries, and Recovery"
+description: "How Patrimonio Gateway handles proxy failures for GET vs. mutating requests, what error responses look like, and how clients should handle 502 errors."
+---
+
+When a proxied request fails — because the upstream service timed out, refused the connection, or was still cold-starting — the gateway does not simply forward the error to the client. Instead, it applies method-aware logic: GET failures return an immediate 502 to protect against rate limiting, while POST, PUT, and DELETE failures trigger a full wake-up and retry cycle before giving up. This document describes both paths, the exact error shapes the gateway returns, and how client code should handle them.
+
+## The two error paths
+
+Error handling lives inside `createSafeProxy`, in the `onError` callback that `http-proxy-middleware` calls whenever a proxy connection fails:
+
+```javascript
+onError: async (err, req, res) => {
+  if (res.headersSent) return;
+
+  if (req.method === 'GET') {
+    return res.status(502).json({
+      error: 'Servicio temporalmente no disponible'
+    });
+  }
+
+  // POST / PUT / DELETE — attempt recovery
+  try {
+    await wakeServiceIfNeeded(target);
+    // rewrite path, retry with fetch ...
+  } catch (retryErr) {
+    if (!res.headersSent) {
+      res.status(502).json({ error: 'Servicio temporalmente no disponible' });
+    }
+  }
+}
+```
+
+### GET — immediate 502, no retry
+
+If the method is `GET`, the gateway responds with 502 and exits immediately. No second attempt is made.
+
+**Why?** Retrying GET requests against a cold Render.com service can trigger HTTP 429 (Too Many Requests) from Render's infrastructure. A single fast failure is safer than accumulating rate-limit penalties that would block all subsequent traffic.
+
+### POST / PUT / DELETE — wake and retry
+
+For mutating methods the gateway:
+
+<Steps>
+  <Step title="Wake the upstream service">
+    Calls `wakeServiceIfNeeded(target)` — the same ping → wait 4s → ping sequence described in the [Wake-Up guide](/guides/wake-up).
+  </Step>
+  <Step title="Rewrite the path">
+    Strips the gateway prefix from `req.originalUrl` so the request reaches the correct upstream path:
+
+    ```javascript
+    if (req.originalUrl.startsWith('/auth'))       rewrittenPath = req.originalUrl.replace('/auth', '');
+    if (req.originalUrl.startsWith('/roles'))      rewrittenPath = req.originalUrl.replace('/roles', '');
+    if (req.originalUrl.startsWith('/usuarios'))   rewrittenPath = req.originalUrl.replace('/usuarios', '');
+    if (req.originalUrl.startsWith('/importador')) rewrittenPath = req.originalUrl.replace('/importador', '');
+    ```
+
+    A leading `/` is added if the replacement produced an empty string.
+  </Step>
+  <Step title="Retry with fetch">
+    The request is replayed directly against the upstream service, preserving the original method, body, and — critically — the `Authorization` header:
+
+    ```javascript
+    const retryRes = await fetch(target + rewrittenPath, {
+      method: req.method,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(req.headers.authorization && {
+          Authorization: req.headers.authorization
+        })
+      },
+      body: ['GET', 'HEAD'].includes(req.method)
+        ? undefined
+        : JSON.stringify(req.body)
+    });
+    ```
+  </Step>
+  <Step title="Forward the upstream response">
+    The raw text body and status code from the upstream retry are forwarded to the client. The `content-length` header is removed first to avoid length mismatches.
+  </Step>
+</Steps>
+
+<Warning>
+  If the retry `fetch` also fails (network error, upstream still unresponsive), the gateway catches the exception and sends a final `502 { error: 'Servicio temporalmente no disponible' }`. There are no further retries. The request is lost and the client must resend it.
+</Warning>
+
+## Error response reference
+
+| Scenario | HTTP status | Response body |
+|---|---|---|
+| GET request — proxy connection failed | `502` | `{ "error": "Servicio temporalmente no disponible" }` |
+| POST/PUT/DELETE — proxy failed, retry also failed | `502` | `{ "error": "Servicio temporalmente no disponible" }` |
+| POST `/auth/login` — any exception during manual login handler | `502` | `{ "error": "Error en login" }` |
+| Any other status from upstream | Passed through as-is | Upstream body forwarded verbatim |
+
+The gateway never transforms upstream 4xx or 5xx responses — only connection-level failures (where no upstream response existed) produce gateway-originated errors.
+
+## The `headersSent` guard
+
+The very first line of the `onError` handler checks:
+
+```javascript
+if (res.headersSent) return;
+```
+
+`http-proxy-middleware` can call `onError` after the proxy has already started streaming a response (e.g. headers sent, body partially written). Writing to a response after headers are sent throws an `ERR_HTTP_HEADERS_SENT` crash. The guard prevents this by silently abandoning error handling when it is already too late to change the response.
+
+A second guard exists at the end of the catch block for the same reason:
+
+```javascript
+if (!res.headersSent) {
+  res.status(502).json({ error: 'Servicio temporalmente no disponible' });
+}
+```
+
+## Handling 502 errors on the client
+
+Client code should treat a 502 from the gateway as a transient, retryable error — the service was likely cold-starting and will be available within seconds.
+
+<CodeGroup>
+```javascript JavaScript (fetch)
+async function apiRequest(url, options = {}) {
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 5000;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const res = await fetch(url, options);
+
+    if (res.status !== 502) {
+      return res; // success or a real upstream error
+    }
+
+    const { error } = await res.json();
+    console.warn(`Gateway 502 (attempt ${attempt}): ${error}`);
+
+    if (attempt < MAX_RETRIES) {
+      await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+    }
+  }
+
+  throw new Error('Service unavailable after retries');
+}
+```
+
+```javascript Axios interceptor
+axios.interceptors.response.use(
+  response => response,
+  async error => {
+    const { config, response } = error;
+
+    if (response?.status === 502 && !config._retryCount) {
+      config._retryCount = (config._retryCount || 0) + 1;
+
+      if (config._retryCount <= 3) {
+        await new Promise(r => setTimeout(r, 5000));
+        return axios(config);
+      }
+    }
+
+    return Promise.reject(error);
+  }
+);
+```
+</CodeGroup>
+
+<Note>
+  GET requests will never self-recover through the gateway's retry logic — only the client can retry them. Build retry logic into your data-fetching layer for all gateway routes, not just mutations.
+</Note>

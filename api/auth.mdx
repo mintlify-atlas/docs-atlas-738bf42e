@@ -1,0 +1,115 @@
+---
+title: 'Auth Routes: Login Endpoint and Auth Service Proxy'
+description: 'Authenticate users via the Gateway login endpoint and proxy requests to the auth microservice. Includes JWT token issuance and Bearer token forwarding.'
+---
+
+The Gateway exposes authentication through two mechanisms: a manual `POST /auth/login` handler that issues JWT tokens, and a transparent proxy for all other `/auth/*` requests forwarded to the upstream auth microservice at `https://patrimonio-apiservice-auth.onrender.com`. Before proxying, the Gateway wakes the auth service if it is sleeping (Render free-tier cold start), so initial requests may take a few seconds longer.
+
+---
+
+## POST /auth/login
+
+Authenticates a user and returns a JWT token. This is a manual handler — the Gateway posts the request body directly to the upstream auth service's `/login` endpoint and returns its response verbatim.
+
+<Tip>
+  Always send the `Content-Type: application/json` header with this request. All subsequent protected routes require the returned token as `Authorization: Bearer <token>`.
+</Tip>
+
+### Request body
+
+The Gateway forwards the request body as-is to the upstream auth service. The exact field names depend on how the auth microservice is configured. Common conventions:
+
+<ParamField body="username" type="string" required>
+  The user's login identifier (username or email address, depending on the auth service configuration).
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  The user's password. Sent over HTTPS; never logged by the Gateway.
+</ParamField>
+
+### Response fields
+
+<ResponseField name="token" type="string" required>
+  A signed JWT token. Pass this as `Authorization: Bearer <token>` on all protected routes.
+</ResponseField>
+
+### Examples
+
+<CodeGroup>
+
+```bash curl
+curl --request POST \
+  --url https://<gateway-host>/auth/login \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "username": "admin",
+    "password": "yourpassword"
+  }'
+```
+
+```javascript JavaScript
+const response = await fetch('https://<gateway-host>/auth/login', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    username: 'admin',
+    password: 'yourpassword',
+  }),
+});
+
+const { token } = await response.json();
+// Store and reuse `token` for authenticated requests
+```
+
+</CodeGroup>
+
+### Error responses
+
+| Status | Body                          | Cause                                              |
+| ------ | ----------------------------- | -------------------------------------------------- |
+| `401`  | Upstream auth response        | Invalid credentials (returned from auth service)   |
+| `502`  | `{ "error": "Error en login" }` | Auth service unreachable or returned a non-JSON response |
+
+---
+
+## /auth/* proxy
+
+All requests to `/auth/*` that are not `POST /auth/login` are proxied transparently to the auth microservice. The path prefix `/auth` is stripped before forwarding, so `/auth/me` becomes `/me` on the upstream service.
+
+### Path rewriting
+
+| Gateway path       | Upstream path |
+| ------------------ | ------------- |
+| `/auth/me`         | `/me`         |
+| `/auth/verify`     | `/verify`     |
+| `/auth/logout`     | `/logout`     |
+
+### Headers forwarded by the Gateway
+
+- **`Authorization`** — forwarded as-is when present on the incoming request.
+- **`ngrok-skip-browser-warning`** — set automatically to suppress ngrok interstitials.
+
+### Using a token from login on subsequent auth calls
+
+<Steps>
+  <Step title="Log in and store the token">
+    ```javascript
+    const { token } = await fetch('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    }).then(r => r.json());
+    ```
+  </Step>
+  <Step title="Include the token on protected requests">
+    ```javascript
+    const profile = await fetch('/auth/me', {
+      headers: { Authorization: `Bearer ${token}` },
+    }).then(r => r.json());
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+  Every protected route on the Gateway — including `/roles/*` and `/usuarios/*` — requires `Authorization: Bearer <token>`. Obtain the token from `POST /auth/login` and attach it to every subsequent request.
+</Tip>
